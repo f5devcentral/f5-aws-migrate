@@ -4,7 +4,7 @@ f5-aws-migrate.py is a Python 2.7 script that automates the migration of a BIG-I
     * Type 1 – Utility (Hourly/Annual Subscriptions)
     * Type 2 – BYOL (Bring Your Own License)
 
-F5 DevCentral Article - [F5 BIG-IP Instance Migration in AWS](https://devcentral.f5.com/articles/f5-big-ip-instance-migration-in-aws)
+F5 DevCentral Article - [F5 BIG-IP Instance Migration in AWS](https://devcentral.f5.com/articles/f5-big-ip-instance-migration-in-aws-19992)
 
 ## Key capabilities
 1. Automates BIG-IP instance migration in AWS for the following scenarios:
