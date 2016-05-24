@@ -1,0 +1,115 @@
+#!/bin/bash
+# Copyright © 2016, F5 Networks, Inc. All rights reserved.
+#
+# No part of this software may be reproduced or transmitted in any
+# form or by any means, electronic or mechanical, for any purpose,
+# without express written permission of F5 Networks, Inc.
+
+set -e
+set -o pipefail
+
+FINALDIR="/var/local/ucs/cve-2016-2084-remediation"
+TMPDIR=$(mktemp -d $FINALDIR-XXXXXX)
+
+function cleanup {
+  rm -rf $TMPDIR
+  umount -t tmpfs /config/bigip/kstore
+}
+trap cleanup EXIT
+
+pushd $TMPDIR > /dev/null
+
+# Vulnerable files and directories to remove from the host so they don't
+# appear in the UCS.
+# /config/bigip/kstore: Not removed; hidden by the tmpfs
+STRIPFILES="\
+/config/f5-rest-device-id \
+/config/filestore/files_d/Common_d/certificate_d/\:Common\:default.crt* \
+/config/filestore/files_d/Common_d/certificate_key_d/\:Common\:default.key* \
+/config/filestore/files_d/Common_d/external_monitor_d \
+/config/filestore/files_d/Common_d/trust_certificate_d/\:Common\:dtca-bundle.crt* \
+/config/filestore/files_d/Common_d/trust_certificate_d/\:Common\:dtca.crt* \
+/config/filestore/files_d/Common_d/trust_certificate_d/\:Common\:dtdi.crt* \
+/config/filestore/files_d/Common_d/trust_certificate_key_d/\:Common\:dtca.key* \
+/config/filestore/files_d/Common_d/trust_certificate_key_d/\:Common\:dtdi.key* \
+/config/httpd/conf/ssl.crt/server.crt \
+/config/httpd/conf/ssl.key/server.key \
+/var/named/config/rndc.key \
+/config/big3d/client.crt \
+/config/ssl/.f5km-lastlog \
+/config/ssl/ssl.crt/default.crt \
+/config/ssl/ssl.crt/dtca-bundle.crt \
+/config/ssl/ssl.crt/dtca.crt \
+/config/ssl/ssl.crt/dtdi.crt \
+/config/ssl/ssl.key/default.key \
+/config/ssl/ssl.key/dtca.key \
+/config/ssl/ssl.key/dtdi.key \
+/var/lib/dhclient/dhclient.leases \
+/etc/ethmap \
+"
+
+STRIPFILES="$STRIPFILES \
+/config/filestore/.snapshots_d \
+"
+
+VULN_UCS="vulnerable.ucs"
+VULN_UCS_FULL="$TMPDIR/$VULN_UCS"
+CLEAN_UCS="clean.ucs"
+CLEAN_UCS_FULL="$TMPDIR/$CLEAN_UCS"
+MASTER_KEY_FILE="/config/bigip/kstore/master"
+
+# Save a UCS before removing vulnerable files from the system.
+# If the removal/restore fails, we can restore the vulnerable UCS, which will
+# restore the vulnerability, but we can then debug and try again.
+echo "Saving vulnerable config backup to $VULN_UCS_FULL..."
+tmsh save /sys ucs $VULN_UCS_FULL
+
+# Get the user to enter a new master key
+before_master_key_hash=$(sha1sum $MASTER_KEY_FILE)
+echo "You must set a new master key by entering it identically at the next"
+echo "two prompts.  Choose a strong master key and protect it like a password."
+echo "You will need to enter the same master key when restoring on the new "
+echo "instance."
+if ! tmsh modify sys crypto master-key prompt-for-password; then
+  echo "Setting new master key failed, exiting script.  Retry."
+  exit 1
+fi
+
+# Save the current sys config, protected by new master key
+# Guarantees that the config is sync'ed with the master key that protects it,
+# and also guarantees that background processes related to updating the
+# master key are complete.
+tmsh save sys config
+
+# It may take mcpd some time to update attributes and make a new master key
+while ! [ -e $MASTER_KEY_FILE ] || ! [ -s $MASTER_KEY_FILE ] ||
+      [ "$(sha1sum $MASTER_KEY_FILE)" == "$before_master_key_hash" ]
+do
+  echo "Waiting for mcpd to set master key..."
+  sleep 3
+done
+
+
+# We need to remove some files so they don't appear in the UCS.  Overlay
+# tmpfs on the keystore so that if the process fails, the user can at least
+# boot, login, and restore from "vulnerable.ucs", the snapshot we took before
+# removing affected files.
+# This must be done after we've set the new master key, or else
+# /config/bigip/bigip.conf will be protected with the wrong master key.
+mount -t tmpfs none /config/bigip/kstore
+
+echo "Removing vulnerable files..."
+rm -rf $STRIPFILES
+
+echo "Saving clean config to $CLEAN_UCS_FULL..."
+tmsh save /sys ucs $CLEAN_UCS_FULL
+
+if [ -e $FINALDIR ]; then
+  echo "Unable to save configs to $FINALDIR; move/remove $FINALDIR"
+  exit 1
+fi
+
+popd > /dev/null
+mv $TMPDIR $FINALDIR
+
+echo "Done. Restore from ${FINALDIR}/${CLEAN_UCS} on new BIG-IP."

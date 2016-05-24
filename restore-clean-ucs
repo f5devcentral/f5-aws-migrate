@@ -1,0 +1,68 @@
+#!/bin/bash
+# Copyright © 2016, F5 Networks, Inc. All rights reserved.
+#
+# No part of this software may be reproduced or transmitted in any
+# form or by any means, electronic or mechanical, for any purpose,
+# without express written permission of F5 Networks, Inc.
+
+set -e
+set -o pipefail
+
+FINALDIR="/var/local/ucs"
+CLEAN_UCS="clean.ucs"
+CLEAN_UCS_FULL="$FINALDIR/$CLEAN_UCS"
+MASTER_KEY_FILE="/config/bigip/kstore/master"
+
+# Get the user to enter a new master key
+before_master_key_hash=$(sha1sum $MASTER_KEY_FILE)
+echo "You must set a new master key by entering it identically at the next"
+echo "two prompts.  You must set it to the same master key you used on the"
+echo "vulnerable instance."
+if ! tmsh modify sys crypto master-key prompt-for-password; then
+  echo "Setting new master key failed, exiting script.  Retry."
+  exit 1
+fi
+# It may take mcpd some time to update attributes and make a new master key
+# If "tmsh save sys config" completes and the master key file is
+# rewritten, then all the background processes for updating the master
+# key are complete.
+tmsh save sys config
+while ! [ -e $MASTER_KEY_FILE ] || ! [ -s $MASTER_KEY_FILE ] ||
+      [ "$(sha1sum $MASTER_KEY_FILE)" == "$before_master_key_hash" ]
+do
+  echo "Waiting for mcpd to set master key..."
+  sleep 3
+done
+
+# Restore the UCS
+tmsh load sys ucs $CLEAN_UCS_FULL reset-trust no-license
+
+# Get the user to set another, final master key.
+# This prevents the master key in the old bundle/instance from being used
+# to attack new bundles/instance
+before_master_key_hash=$(sha1sum $MASTER_KEY_FILE)
+echo "You must set a final master key by entering it identically at the"
+echo "next two prompts.  This should not be the same master key you used on"
+echo "the vulnerable instance."
+if ! tmsh modify sys crypto master-key prompt-for-password; then
+  echo "Setting final master key failed, but clean configuration loaded "
+  echo "successfully.  F5 recommends that you set the master-key manually:"
+  echo "  tmsh modify sys crypto master-key prompt-for-password"
+  echo "  tmsh save sys config"
+  exit 1
+fi
+# It may take mcpd some time to update attributes and make a new master key
+# If "tmsh save sys config" completes and the master key file is
+# rewritten, then all the background processes for updating the master
+# key are complete.
+
+tmsh save sys config
+while ! [ -e $MASTER_KEY_FILE ] || ! [ -s $MASTER_KEY_FILE ] ||
+      [ "$(sha1sum $MASTER_KEY_FILE)" == "$before_master_key_hash" ]
+do
+  echo "Waiting for mcpd to set master key..."
+  sleep 3
+done
+
+
+tmsh save sys config
